@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PanIndex - Universal Pangenome Explorer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-main: #fafaf9; /* Warm cream */
+            --bg-sidebar: #f5f5f4; /* Slightly darker stone */
+            --card-glass: rgba(255, 255, 255, 0.7);
+            --accent-primary: #ea580c; /* Bright Terracotta / Orange-Brown */
+            --accent-secondary: #92400e; /* Deep Amber */
+            --text-main: #1c1917; /* High contrast stone */
+            --text-muted: #57534e;
+            --border: #e7e5e4;
+            --fwd: #15803d; /* Forest Green */
+            --rev: #b91c1c; /* Crimson */
+            --match: #f59e0b;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            margin: 0; padding: 0;
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            display: flex; height: 100vh; overflow: hidden;
+        }
+
+        #sidebar {
+            width: 400px;
+            background-color: var(--bg-sidebar);
+            padding: 32px;
+            border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; gap: 28px;
+            z-index: 10;
+            box-shadow: 10px 0 30px rgba(0,0,0,0.03);
+        }
+
+        #cy-container { flex-grow: 1; position: relative; background: radial-gradient(circle at center, #ffffff 0%, #fafaf9 100%); }
+        #cy { width: 100%; height: 100%; display: block; }
+
+        .brand { display: flex; align-items: center; gap: 14px; }
+        .logo { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent-primary), var(--match)); border-radius: 10px; box-shadow: 0 4px 12px rgba(234, 88, 12, 0.2); }
+        h1 { font-size: 22px; font-weight: 700; color: var(--text-main); margin: 0; letter-spacing: -0.02em; }
+        .subtitle { font-size: 14px; color: var(--accent-primary); font-weight: 600; margin-top: -4px; opacity: 0.8; }
+
+        .control-group {
+            background-color: white;
+            padding: 20px; border-radius: 16px;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+            transition: transform 0.2s;
+        }
+        .control-group:hover { transform: translateY(-2px); }
+
+        label { display: block; margin-bottom: 10px; font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+        
+        input, select {
+            width: 100%; padding: 12px; margin-bottom: 14px;
+            background-color: var(--bg-main); border: 1px solid var(--border);
+            color: var(--text-main); border-radius: 8px; box-sizing: border-box;
+            font-family: inherit; font-size: 14px; outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus { border-color: var(--accent-primary); }
+
+        button {
+            width: 100%; padding: 12px;
+            background-color: var(--text-main); color: white;
+            border: none; border-radius: 8px; cursor: pointer;
+            font-weight: 600; transition: all 0.3s;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        button:hover { background-color: var(--accent-primary); transform: scale(1.02); }
+
+        #selection-card {
+            margin-top: auto;
+            background: linear-gradient(135deg, #fff 0%, #fff7ed 100%);
+            padding: 24px; border-radius: 16px; 
+            border: 1px solid #ffedd5;
+            font-size: 14px; line-height: 1.6;
+            box-shadow: 0 10px 40px rgba(180, 83, 9, 0.05);
+        }
+
+        .highlight { color: var(--accent-primary); font-family: 'Courier New', monospace; font-weight: 700; word-break: break-all; }
+        .strand-fwd { color: var(--fwd); font-weight: 700; }
+        .strand-rev { color: var(--rev); font-weight: 700; }
+
+        .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-muted); }
+        .legend-item { display: flex; align-items: center; gap: 6px; background: white; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border); }
+        .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+        #status-bar {
+            position: absolute; bottom: 32px; left: 32px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px 24px; border-radius: 30px;
+            font-size: 13px; font-weight: 600;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            backdrop-filter: blur(12px);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.05);
+            pointer-events: none;
+        }
+
+        #layout-controls {
+            position: absolute; top: 32px; right: 32px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 8px; border-radius: 12px;
+            border: 1px solid var(--border);
+            backdrop-filter: blur(12px);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.05);
+            display: flex; gap: 8px;
+            z-index: 100;
+        }
+
+        .layout-btn {
+            background: var(--bg-sidebar);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-family: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: none;
+            transition: all 0.2s;
+        }
+
+        .layout-btn.active {
+            background: var(--accent-primary);
+            color: white;
+            border-color: var(--accent-primary);
+        }
+        
+        .layout-btn:hover:not(.active) {
+            background: #e7e5e4;
+        }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div class="brand">
+        <div class="logo"></div>
+        <div>
+            <h1>PanIndex</h1>
+            <div class="subtitle">Universal Pangenome Explorer</div>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>Deterministic Path (Ratchet)</label>
+        <select id="path-input">
+            <option value="">Select a derivation path...</option>
+        </select>
+        <button onclick="runQuery('path')">Compute Address</button>
+    </div>
+
+    <div class="control-group">
+        <label>DNA Similarity Search (LSH)</label>
+        <input type="text" id="sim-input" placeholder="Enter sequence fragment..." value="ATGATTAATATATCTGAGTT">
+        <button onclick="runQuery('similarity')">Scan Variations</button>
+    </div>
+
+    <div class="control-group">
+        <label>Visual Filters</label>
+        <select id="strand-filter" onchange="applyFilters()">
+            <option value="both">Both Biological Strands</option>
+            <option value="+">Positive Strand (+) Only</option>
+            <option value="-">Negative Strand (-) Only</option>
+        </select>
+        <div class="legend" style="margin-top: 10px;">
+            <div class="legend-item"><div class="dot" style="background:var(--fwd)"></div> Forward</div>
+            <div class="legend-item"><div class="dot" style="background:var(--rev)"></div> Reverse</div>
+            <div class="legend-item"><div class="dot" style="background:var(--match)"></div> Selection</div>
+        </div>
+    </div>
+
+    <div id="selection-card">
+        <div id="details-content">Explore the bipartite graph states. <br><span style="color:var(--text-muted)">Addresses are derived in O(1) time.</span></div>
+    </div>
+</div>
+
+<div id="cy-container">
+    <div id="layout-controls">
+        <button class="layout-btn active" onclick="switchLayout('mathematical', this)">Mathematical Grid</button>
+        <button class="layout-btn" onclick="switchLayout('biological', this)">Biological Trace (GFA)</button>
+        <button class="layout-btn" onclick="switchLayout('circular', this)">Plasmid Rings</button>
+    </div>
+    <div id="cy"></div>
+    <div id="status-bar">
+        Clinical Isolates: <i>K. pneumoniae</i> &bull; 500 Nodes &bull; Universal Topology
+    </div>
+</div>
+
+<script>
+    const layouts = {
+        'mathematical': {
+            name: 'cose',
+            animate: true,
+            padding: 80,
+            nodeRepulsion: 1000,
+            idealEdgeLength: 50,
+            componentSpacing: 100
+        },
+        'biological': {
+            name: 'cose',
+            animate: true,
+            padding: 50,
+            nodeRepulsion: 400000, // Massive repulsion to un-bunch the edges like typical GFA tools
+            idealEdgeLength: 10,  // Pull linked nodes tightly into chains
+            edgeElasticity: 200,
+            nestingFactor: 5,
+            gravity: 20,
+            numIter: 1000,
+            componentSpacing: 300
+        },
+        'circular': {
+            name: 'concentric',
+            animate: true,
+            padding: 50,
+            minNodeSpacing: 50,
+            concentric: function(node){ return node.degree(); },
+            levelWidth: function(nodes){ return 2; }
+        }
+    };
+
+    let cy;
+
+    async function init() {
+        try {
+            const res = await fetch('http://localhost:5000/graph');
+            const elements = await res.json();
+
+            cy = cytoscape({
+                container: document.getElementById('cy'),
+                elements: elements,
+                // ... styles and layouts ...
+                style: [
+                    {
+                        selector: 'node',
+                        style: {
+                            'background-color': n => n.data('strand') === '+' ? '#15803d' : '#b91c1c',
+                            'label': 'data(label)',
+                            'color': '#1c1917',
+                            'font-family': 'Outfit',
+                            'font-weight': 600,
+                            'font-size': '9px',
+                            'text-valign': 'top',
+                            'text-margin-y': -8,
+                            'width': 18, 'height': 18,
+                            'transition-property': 'background-color, width, height, border-width',
+                            'transition-duration': '0.3s'
+                        }
+                    },
+                    {
+                        selector: 'edge',
+                        style: {
+                            'width': 1.5,
+                            'line-color': '#e7e5e4',
+                            'target-arrow-color': '#e7e5e4',
+                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'bezier',
+                            'opacity': 0.6
+                        }
+                    },
+                    {
+                        selector: '.matched',
+                        style: {
+                            'background-color': '#f59e0b',
+                            'width': 40, 'height': 40,
+                            'border-width': 6, 'border-color': '#ffffff',
+                            'border-opacity': 0.8
+                        }
+                    },
+                    {
+                        selector: '.hidden',
+                        style: { 'display': 'none' }
+                    }
+                ],
+                layout: layouts['mathematical']
+            });
+
+            // Populate the Path Dropdown
+            const pathSelect = document.getElementById('path-input');
+            const uniquePaths = new Set();
+            elements.forEach(el => {
+                if(el.data.type === 'state' && el.data.derivation_path) {
+                    uniquePaths.add(el.data.derivation_path);
+                }
+            });
+            Array.from(uniquePaths).sort().forEach(path => {
+                const opt = document.createElement('option');
+                opt.value = path;
+                opt.text = path;
+                pathSelect.add(opt);
+            });
+
+            cy.on('tap', 'node', e => showNode(e.target.data()));
+        } catch (e) {
+            document.getElementById('details-content').innerText = "PanIndex Server Offline.";
+        }
+    }
+
+    function switchLayout(layoutName, btnElement) {
+        document.querySelectorAll('.layout-btn').forEach(btn => btn.classList.remove('active'));
+        btnElement.classList.add('active');
+        
+        cy.layout(layouts[layoutName]).run();
+    }
+
+    function showNode(data) {
+        const strandClass = data.strand === '+' ? 'strand-fwd' : 'strand-rev';
+        document.getElementById('details-content').innerHTML = `
+            <div style="margin-bottom:16px; border-bottom: 2px solid #ffedd5; padding-bottom:12px">
+                <span style="font-size:18px; font-weight:700">Sequence State ${data.physical_id}</span>
+                <span class="${strandClass}"> (${data.strand})</span>
+            </div>
+            <label>Hierarchical Address</label>
+            <div class="highlight">${data.address}</div>
+            <label style="margin-top:16px">Pangenome Component</label>
+            <div style="font-weight:600">ID: ${data.component}</div>
+            <label style="margin-top:16px">Nucleotide Fragment</label>
+            <div style="font-family:'Courier New', monospace; color:var(--text-muted); font-size:11px; background:#fff; padding:8px; border-radius:4px; border: 1px solid #ffedd5;">
+                ${data.seq_preview}
+            </div>
+        `;
+    }
+
+    async function runQuery(type) {
+        const val = document.getElementById(type === 'path' ? 'path-input' : 'sim-input').value;
+        const res = await fetch(`http://localhost:5000/query?${type}=${encodeURIComponent(val)}`);
+        const data = await res.json();
+        
+        cy.nodes().removeClass('matched');
+        if (data.matched_nodes) {
+            data.matched_nodes.forEach(id => {
+                const n = cy.getElementById(id);
+                n.addClass('matched');
+                if (data.matched_nodes.length === 1) {
+                    cy.animate({ center: { eles: n }, zoom: 1.5 }, { duration: 600 });
+                    showNode(n.data());
+                }
+            });
+        }
+    }
+
+    function applyFilters() {
+        const strand = document.getElementById('strand-filter').value;
+        cy.nodes().removeClass('hidden');
+        if (strand !== 'both') {
+            cy.nodes().filter(n => n.data('strand') !== strand).addClass('hidden');
+        }
+    }
+
+    init();
+</script>
+</body>
+</html>
