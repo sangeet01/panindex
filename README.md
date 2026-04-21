@@ -87,8 +87,8 @@ python viz/server.py
 
 If you want the deep-dive math, linguistics, and theory, read the canonical documents located in the `docs/` folder:
 
-- 📖 [**The Master Theory**](final.md): The full origin story and Paninian linguistic proofs.
-- 🔬 [**Formal Whitepaper**](docs/whitepaper.md): High-level scientific abstract of the implementation.
-- ⚙️ [**Technical Specs**](docs/technical_spec.md): Deep dive into the cryptographic hashes and Bipartite rules.
+
+-----
 
 > *Built by Sangeet Sharma.*
+> 
