@@ -28,7 +28,14 @@ class PanIndexStore:
     # Write operations
     # ------------------------------------------------------------------
 
-    def insert(self, node_id: str, address: bytes, tags: List[str], metadata: Dict[str, Any] = None):
+    def insert(
+        self,
+        node_id: str,
+        address: bytes,
+        tags: List[str],
+        metadata: Dict[str, Any] = None,
+        organism: str = "",
+    ):
         """
         Insert a node and its PanIndex address into the index.
 
@@ -36,7 +43,9 @@ class PanIndexStore:
             node_id   : GFA segment ID (e.g. '1', '42').
             address   : 32-byte PanIndex address (bytes).
             tags      : List of Anubandha tag strings (e.g. ['AMR:blaTEM', 'Chr4']).
-            metadata  : Any additional data to store (sequence, derivation path, etc.).
+            metadata  : Any additional data (sequence, derivation path, etc.).
+            organism  : Organism/strain identifier for namespace scoping.
+                        Default '' (global namespace, backward compatible).
         """
         addr_hex = address.hex()
 
@@ -55,11 +64,12 @@ class PanIndexStore:
             if node_id not in self._tag_index[tag]:
                 self._tag_index[tag].append(node_id)
 
-        # Node store
+        # Node store - include organism for namespace-scoped queries
         self._node_store[node_id] = {
             'address': addr_hex,
             'tags': tags,
             'metadata': metadata or {},
+            'organism': organism,
         }
 
     # ------------------------------------------------------------------
@@ -77,11 +87,25 @@ class PanIndexStore:
             return self._addr_vals[pos]
         return None
 
-    def lookup_by_tag(self, tag: str) -> List[str]:
+    def lookup_by_tag(self, tag: str, organism: Optional[str] = None) -> List[str]:
         """
         O(1) lookup of all node_ids carrying a given Anubandha tag.
+
+        Args:
+            tag      : Anubandha tag string (e.g. 'AMR:blaTEM').
+            organism : If specified, return only nodes from this organism.
+                       None (default) returns nodes from all organisms.
+
+        Returns:
+            List of matching node_ids.
         """
-        return self._tag_index.get(tag, [])
+        nodes = self._tag_index.get(tag, [])
+        if organism is None:
+            return nodes
+        return [
+            n for n in nodes
+            if self._node_store.get(n, {}).get('organism', '') == organism
+        ]
 
     def range_lookup(self, address_start: bytes, address_end: bytes) -> List[Tuple[str, str]]:
         """
@@ -93,12 +117,75 @@ class PanIndexStore:
         hi = bisect.bisect_right(self._addr_keys, address_end.hex())
         return list(zip(self._addr_keys[lo:hi], self._addr_vals[lo:hi]))
 
-    def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve full node metadata."""
-        return self._node_store.get(node_id)
+    def get_node(
+        self,
+        node_id: str,
+        organism: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve full node metadata.
 
-    def all_nodes(self) -> List[str]:
-        return list(self._node_store.keys())
+        Args:
+            node_id  : Segment ID to look up.
+            organism : If specified, return None if the node's organism
+                       does not match. None (default) returns any match.
+
+        Returns:
+            Node record dict or None if not found / organism mismatch.
+        """
+        record = self._node_store.get(node_id)
+        if record is None:
+            return None
+        if organism is not None and record.get('organism', '') != organism:
+            return None
+        return record
+
+    def all_nodes(self, organism: Optional[str] = None) -> List[str]:
+        """
+        Return all node_ids, optionally scoped to a specific organism.
+        """
+        if organism is None:
+            return list(self._node_store.keys())
+        return [
+            nid for nid, rec in self._node_store.items()
+            if rec.get('organism', '') == organism
+        ]
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, path: str) -> int:
+        """
+        Persist this store to a SQLite database file.
+
+        Args:
+            path: Output file path (e.g. 'pangenome.frx.db').
+                  Created or overwritten.
+
+        Returns:
+            Number of nodes written.
+        """
+        from persistence import save_store
+        n = save_store(self, path)
+        return n
+
+    @classmethod
+    def load(cls, path: str) -> 'PanIndexStore':
+        """
+        Load a PanIndexStore from a SQLite database file saved by save().
+
+        Args:
+            path: Path to a .db file written by save().
+
+        Returns:
+            Populated PanIndexStore ready for all query operations.
+
+        Raises:
+            FileNotFoundError if path does not exist.
+        """
+        from persistence import load_store
+        return load_store(path)
 
     # ------------------------------------------------------------------
     # Introspection

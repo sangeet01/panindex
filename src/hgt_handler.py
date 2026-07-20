@@ -36,7 +36,11 @@ class OrganismGraph:
         derived = self.engine.derive_ratchet_address(parent, f"{self.name}/{node_id}")
         addr = self.engine.compute_node_address(seq, derived)
         self.chromosome[node_id] = {'seq': seq, 'addr': addr, 'tags': tags}
-        self.store.insert(node_id, addr, tags, {'seq': seq, 'organism': self.name})
+        self.store.insert(
+            node_id, addr, tags,
+            {'seq': seq, 'organism': self.name},
+            organism=self.name,
+        )
 
     def register_plasmid(self, plasmid_name: str, circular_sequence: str,
                          resistance_tags: List[str]) -> bytes:
@@ -55,7 +59,8 @@ class OrganismGraph:
             node_id=f"PLASMID:{plasmid_name}",
             address=canonical_hash,
             tags=resistance_tags,
-            metadata={'type': 'plasmid', 'organism': self.name, 'seq': circular_sequence}
+            metadata={'type': 'plasmid', 'organism': self.name, 'seq': circular_sequence},
+            organism=self.name,
         )
         return canonical_hash
 

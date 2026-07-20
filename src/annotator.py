@@ -30,6 +30,9 @@ class GFAAnnotator:
         self.store = PanIndexStore()
         self._parser: Optional[GFAParser] = None
 
+        from default_rules import build_default_rule_engine
+        self._rule_engine = build_default_rule_engine()
+
     def annotate(self, input_path: str, output_path: str,
                  derivation_root: str = "PangenomeRoot"):
         """
@@ -64,6 +67,12 @@ class GFAAnnotator:
 
             anubandha_tags = self._extract_anubandha_tags(data.get('tags', []))
             derivation_path = f"{derivation_root}/{node_id}"
+
+            # Apply Paninian rule engine - append resolution as an extra tag
+            rule_node = {'tags': anubandha_tags, 'seq': data.get('seq', '')}
+            resolution = self._rule_engine.resolve(rule_node, {})
+            if resolution and resolution != 'default_resolution':
+                anubandha_tags = list(anubandha_tags) + [resolution]
 
             # Primary registration: by ratchet path address (enables query_by_path)
             self.store.insert(

@@ -46,11 +46,49 @@ class QueryResult:
                 print(f"       Address       : {node['address'][:24]}...")
 
 
+class VariantDiffResult:
+    """
+    Result of a Mode 4 hash-based variant comparison.
+
+    Verdicts
+    --------
+    IDENTICAL  : Addresses match exactly. Same sequence + same context.
+    VARIANT    : Addresses differ. Same organism. MinHash similarity >= 0.5.
+    NOVEL      : Addresses differ. Different organism or similarity < 0.5.
+    NOT_FOUND  : One or both node IDs absent from the index.
+    """
+
+    VERDICTS = ('IDENTICAL', 'VARIANT', 'NOVEL', 'NOT_FOUND')
+
+    def __init__(self, node_id_a: str, node_id_b: str, verdict: str,
+                 similarity: float, addr_a: Optional[str],
+                 addr_b: Optional[str], same_organism: bool):
+        self.node_id_a = node_id_a
+        self.node_id_b = node_id_b
+        self.verdict = verdict
+        self.similarity = similarity
+        self.addr_a = addr_a
+        self.addr_b = addr_b
+        self.same_organism = same_organism
+
+    def print(self):
+        print(f"\n[Variant Diff] '{self.node_id_a}' vs '{self.node_id_b}'")
+        print(f"  Verdict       : {self.verdict}")
+        if self.verdict == 'NOT_FOUND':
+            return
+        print(f"  Similarity    : {self.similarity:.4f}")
+        print(f"  Same organism : {self.same_organism}")
+        if self.addr_a:
+            print(f"  Addr A        : {self.addr_a[:24]}...")
+        if self.addr_b:
+            print(f"  Addr B        : {self.addr_b[:24]}...")
+
+
 class PanIndexQuery:
     """
     Phase 4 - Unified Query Interface.
 
-    Three modes, all work against a populated PanIndexStore:
+    Four modes, all work against a populated PanIndexStore:
 
     Mode 1 - Ratchet Path Query  (O(1) per level):
         Input : "Root/Chr4/BRCA1/VarA"
@@ -69,6 +107,13 @@ class PanIndexQuery:
                 stored node sequences using Hamming distance.
                 Returns nodes within the similarity threshold.
         Use   : Find structurally similar genomic regions without alignment.
+
+    Mode 4 - Hash-Based Variant Diff  (O(1) address compare + O(k) MinHash):
+        Input : Two node IDs, e.g. "gene_blaTEM", "VarA"
+        Action: Compare ratchet addresses. If different, compute MinHash
+                similarity and check organism membership.
+        Use   : Determine IDENTICAL / VARIANT / NOVEL relationship without
+                sequence alignment. Unique to FRX.
     """
 
     def __init__(self, engine: PanIndexEngine, store: PanIndexStore,
@@ -204,6 +249,91 @@ class PanIndexQuery:
         matched_ids = [nid for _, nid in matched]
 
         return QueryResult("LSHSimilarity", sequence[:20] + "...", matched_ids, self.store)
+
+    # ------------------------------------------------------------------
+    # Mode 4: Hash-Based Variant Diff
+    # ------------------------------------------------------------------
+
+    def query_variant_diff(
+        self,
+        node_id_a: str,
+        node_id_b: str,
+        similarity_threshold: float = 0.5,
+    ) -> VariantDiffResult:
+        """
+        Compare two indexed nodes and classify their relationship.
+
+        Algorithm:
+        1. Look up both nodes. If either is missing -> NOT_FOUND.
+        2. Compare ratchet addresses directly. Equal -> IDENTICAL.
+        3. Compute MinHash similarity of their sequences.
+        4. Check organism membership.
+        5. Similarity >= threshold AND same organism -> VARIANT.
+           Otherwise -> NOVEL.
+
+        All comparisons are O(1) or O(k) where k = MinHash signature length.
+        No sequence alignment is performed.
+
+        Args:
+            node_id_a          : ID of the first node.
+            node_id_b          : ID of the second node.
+            similarity_threshold: MinHash Jaccard threshold for VARIANT. Default 0.5.
+
+        Returns:
+            VariantDiffResult with verdict, similarity score, and addresses.
+        """
+        node_a = self.store.get_node(node_id_a)
+        node_b = self.store.get_node(node_id_b)
+
+        if node_a is None or node_b is None:
+            missing = node_id_a if node_a is None else node_id_b
+            print(f"  [Variant Diff] Node not found: '{missing}'")
+            return VariantDiffResult(
+                node_id_a, node_id_b,
+                verdict='NOT_FOUND',
+                similarity=0.0,
+                addr_a=node_a['address'] if node_a else None,
+                addr_b=node_b['address'] if node_b else None,
+                same_organism=False,
+            )
+
+        addr_a = node_a['address']
+        addr_b = node_b['address']
+        org_a = node_a.get('organism', '')
+        org_b = node_b.get('organism', '')
+        same_organism = (org_a == org_b)
+
+        # Step 2: Exact address match -> IDENTICAL
+        if addr_a == addr_b:
+            return VariantDiffResult(
+                node_id_a, node_id_b,
+                verdict='IDENTICAL',
+                similarity=1.0,
+                addr_a=addr_a,
+                addr_b=addr_b,
+                same_organism=same_organism,
+            )
+
+        # Step 3+4: MinHash similarity + organism check
+        seq_a = node_a['metadata'].get('seq', '')
+        seq_b = node_b['metadata'].get('seq', '')
+        sig_a = self._minhash_signature(seq_a)
+        sig_b = self._minhash_signature(seq_b)
+        similarity = self._hamming_similarity(sig_a, sig_b)
+
+        if similarity >= similarity_threshold and same_organism:
+            verdict = 'VARIANT'
+        else:
+            verdict = 'NOVEL'
+
+        return VariantDiffResult(
+            node_id_a, node_id_b,
+            verdict=verdict,
+            similarity=similarity,
+            addr_a=addr_a,
+            addr_b=addr_b,
+            same_organism=same_organism,
+        )
 
 
 # ------------------------------------------------------------------
