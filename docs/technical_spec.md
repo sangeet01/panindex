@@ -34,3 +34,19 @@ Inspired by the 2500-year-old grammar of Pāṇini, this engine resolves ambigui
 
 - **Utsarga (General) & Apavada (Exception)**: Defines a hierarchy of rules for how sequences should be concatenated or tagged when multiple valid paths exist.
 - **Axiomatic Stability**: Ensures that two researchers indexing the same graph will always arrive at the exact same addresses.
+
+### 6. Subsequence Search & Alignment-Free Querying
+PanIndex provides native sequence-to-graph search capabilities:
+- **K-mer Indexing**: Extracts k-mers (e.g., $k=12$) across the entire graph into a fast index mapping k-mers to their source nodes, enabling exact match searches via `frx pattern`.
+- **MinHash / LSH (Variant Detection)**: Hashes longer sequences to generate locality-sensitive signatures, enabling rapid detection of homologous segments with mutations (Mode 4 / `frx variant`).
+
+### 7. Ecosystem Integration & Normalization
+To seamlessly interact with standard pangenome tools like `vg`, PanIndex includes a specialized `VGFRXNormalizer` pipeline:
+- **VG Tags Handling**: Safely strips internal metrics like `LN:i:` (sequence length) and `RC:i:` (read count) that are otherwise non-standard GFA components, while preserving domain-specific custom annotations.
+- **Path Pass-through**: Intelligently passes GFA 1.1 `W` (walks) and `P` (paths) unaltered, allowing PanIndex databases to remain 100% interoperable with graph layout tools like Bandage and Cytoscape.
+
+### 8. Containerized, Secure API Backend
+The visualization logic is served by a decoupled Flask API layer, optimized for high throughput.
+- **Authentication**: Stateless, timing-attack resistant Bearer token enforcement (`hmac.compare_digest`).
+- **Rate-Limiting**: Token bucket / sliding window per-IP rate limiting (429 responses).
+- **Deployment**: Single-stage lightweight Docker image (`frx`) orchestrating the DB load and the web endpoints.
