@@ -242,6 +242,22 @@ def cmd_variant(args):
     result.print()
 
 
+def cmd_vg_import(args):
+    """Normalize a vg-generated GFA and build an FRX index from it."""
+    from vg_frx import run_vg_import
+
+    run_vg_import(
+        gfa_path=args.gfa,
+        out_db=args.out,
+        seed=args.seed.encode(),
+        derivation_root=args.root,
+        streaming=args.streaming,
+        build_kmer_index=args.build_kmer_index,
+        keep_vg_tags=args.keep_vg_tags,
+        verbose=True,
+    )
+
+
 # ======================================================================
 # Parser construction
 # ======================================================================
@@ -262,6 +278,7 @@ examples:
   frx stats      --index pangenome.frx.db
   frx merge      genome.fasta graph.gfa merged.gfa --annotate --save-index
   frx fasta2gfa  genome.fasta output.gfa --annotate
+  frx vg-import  --gfa vg_output.gfa --out index.db --build-kmer-index
   frx hgt-sim
         """
     )
@@ -369,6 +386,21 @@ examples:
                     help='MinHash similarity threshold for VARIANT verdict (default: 0.5)')
     pv.add_argument('--seed', default='panindex_default_seed')
     pv.set_defaults(func=cmd_variant)
+
+    # -- vg-import --
+    pvg = sub.add_parser('vg-import',
+                         help='Import a vg-generated GFA, normalize, annotate, and build index')
+    pvg.add_argument('--gfa',  required=True, help='vg-generated GFA file')
+    pvg.add_argument('--out',  required=True, help='Output .frx.db file path')
+    pvg.add_argument('--seed', default='panindex_default_seed')
+    pvg.add_argument('--root', default='PangenomeRoot')
+    pvg.add_argument('--streaming', action='store_true',
+                     help='Use streaming annotator for large GFA files')
+    pvg.add_argument('--build-kmer-index', action='store_true', dest='build_kmer_index',
+                     help='Build k-mer index after annotation')
+    pvg.add_argument('--keep-vg-tags', action='store_true', dest='keep_vg_tags',
+                     help='Keep vg-internal tags (LN:i:, RC:i:, etc.) in output')
+    pvg.set_defaults(func=cmd_vg_import)
 
     return p
 
