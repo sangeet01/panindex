@@ -25,16 +25,16 @@ For decades, bioinformatics has relied on **FASTA** files—linear strings of te
 
 To fix this, the field moved to **GFA (Graphical Fragment Assembly)**. A pangenome graph stores overlapping sequences as nodes and paths. But this destroyed our coordinate system. This is known as the **Coordinate Collapse**. If you split a node in a graph, all linear indices shatter. Searching for a Resistance Gene in a 500-isolate bacterial graph suddenly went from simple $O(1)$ indexing to an expensive $O(N)$ graph-alignment problem.
 
-PanIndex is the first **Deterministic, Content-Addressable Meta-Layer** for pangenomic graphs. 
-* It completely replaces graph-walking with **O(1) Cryptographic Derivation**.
-* It restores stable, FASTA-like pinpointing while keeping 100% of the graph's structural diversity.
+PanIndex is a **deterministic, topology-aware indexing layer** for pangenomic graphs.
+* After preprocessing, known paths, addresses, tags, and k-mers can bypass graph-walking through direct index lookup.
+* It separates stable graph coordinates from sequence-derived content identities, preserving graph structure without conflating placement and content.
 
 ---
 
 ## ⚙️ The Mathematical Engine
 PanIndex does not "assign" IDs to nodes. It mathematically *derives* them.
 
-1. **The Fractal Ratchet ($O(1)$ Lookup):** Computes addresses based on *structural context*. A path like `PangenomeRoot/Chromosome_1/Node_14` mathematically derives a 32-byte address instantly via HMAC-based Key Derivation (HKDF), without walking the graph.
+1. **The Fractal Ratchet (direct indexed lookup):** Computes addresses based on *structural context*. A path like `PangenomeRoot/Chromosome_1/Node_14` derives a 32-byte address in $O(d)$ time for path depth $d$, without walking the graph, then resolves it through the address index.
 2. **Paninian Meta-Layers:** Inspired by the 2500-year-old linguistics of Pāṇini's Sanskrit grammar, we use invisible meta-tags (Anubandhas) and priority rules (Utsarga/Apavada) to deterministically resolve complex nested variations resulting in a single canonical coordinate for every edge-case.
 
 ---

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.backends.legacy:BuildBackend"
+
+[project]
+name = "fractalindex-frx"
+version = "0.1.0"
+description = "Content-addressed pangenome indexing with alignment-free query"
+requires-python = ">=3.9"
+dependencies = [
+    "cryptography>=41.0",
+    "flask>=3.0",
+    "flask-cors>=4.0",
+]
+
+[project.scripts]
+frx = "src.cli:main"
+frx-api = "viz.server:main"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-dir]
+"" = "."

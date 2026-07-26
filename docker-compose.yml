@@ -1,0 +1,33 @@
+services:
+  frx-api:
+    build: .
+    image: frx:latest
+    ports:
+      - "5000:5000"
+    environment:
+      - FRX_API_TOKEN=${FRX_API_TOKEN:-}
+      - FRX_RATE_LIMIT=${FRX_RATE_LIMIT:-100}
+    volumes:
+      - ./data:/app/data:ro
+    command: ["python", "viz/server.py"]
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request, sys; r = urllib.request.urlopen('http://localhost:5000/health', timeout=3); sys.exit(0 if r.status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  frx-cli:
+    build: .
+    image: frx:latest
+    volumes:
+      - ./data:/app/data
+    profiles:
+      - cli
+    # Usage: docker compose run frx-cli frx stats --index /app/data/index.db
+    entrypoint: ["python", "-m", "src.cli"]
