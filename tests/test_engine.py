@@ -138,6 +138,67 @@ class TestCanonicalCycleHash(unittest.TestCase):
         h = self.engine.canonical_cycle_hash("ATCG")
         self.assertEqual(len(h), 32)
 
+    def test_empty_sequence_does_not_crash(self):
+        # Guards against index errors in the rotation search on n=0.
+        h = self.engine.canonical_cycle_hash("")
+        self.assertEqual(len(h), 32)
+
+    def test_least_rotation_matches_brute_force(self):
+        """
+        The O(n) Booth's-algorithm rotation search must agree with a
+        brute-force O(n^2) scan of every rotation, across varied inputs
+        including repeats/homopolymers where rotation search is trickiest.
+        """
+        import random
+
+        def brute_force_min_rotation(s):
+            n = len(s)
+            doubled = s + s
+            return min(doubled[i:i + n] for i in range(n))
+
+        random.seed(7)
+        sequences = [
+            "A", "AA", "AAAA", "ACGT", "ACGTACGT", "TTTTTTTT",
+            "GATTACAGATTACA", "ACGTACGTACGA",
+        ]
+        sequences += [
+            "".join(random.choice("ACGT") for _ in range(random.randint(1, 60)))
+            for _ in range(200)
+        ]
+
+        for seq in sequences:
+            start = self.engine._least_rotation_index(seq)
+            got = seq[start:] + seq[:start]
+            want = brute_force_min_rotation(seq)
+            self.assertEqual(
+                got, want,
+                f"Least-rotation mismatch for {seq!r}: got {got!r}, want {want!r}"
+            )
+
+    def test_large_plasmid_performance(self):
+        """
+        canonical_cycle_hash must scale ~linearly, not quadratically, so
+        that a 100kb+ plasmid or megabase chromosome doesn't become a
+        bottleneck -- the exact problem this project exists to avoid.
+        """
+        import random
+        import time
+
+        random.seed(3)
+        seq = "".join(random.choice("ACGT") for _ in range(100_000))
+
+        start = time.time()
+        self.engine.canonical_cycle_hash(seq)
+        elapsed = time.time() - start
+
+        # A quadratic scan of 100k bases takes on the order of a second
+        # or more in pure Python; a linear scan is well under 100ms.
+        self.assertLess(
+            elapsed, 0.5,
+            f"canonical_cycle_hash took {elapsed:.3f}s on 100kb input; "
+            "looks quadratic, not linear"
+        )
+
 
 class TestPanIndexStore(unittest.TestCase):
     """
