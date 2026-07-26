@@ -1,12 +1,13 @@
 import sys
 import os
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from engine import PanIndexEngine
 from index import PanIndexStore
-from hgt_handler import OrganismGraph, HGTSimulation
+from hgt_handler import OrganismGraph, HGTSimulation, HGTRegistry
 
 
 PLASMID_SEQ = "ATGCGTCGTAGCTAGCTAGCTGATCGATCGATCGATCGAATTCGCTAGCTAGCTAGCATG"
@@ -35,9 +36,13 @@ class TestHGTSymlink(unittest.TestCase):
     def setUp(self):
         engine = PanIndexEngine(pangenome_seed=b"test_hgt_symlink_seed_000000000")
         store = PanIndexStore()
-        self.donor = OrganismGraph("Donor", engine, store)
-        self.recipient = OrganismGraph("Recipient", engine, store)
+        fd, self._reg_path = tempfile.mkstemp(suffix='.hgt.db')
+        os.close(fd)
+        registry = HGTRegistry(self._reg_path)
+        self.donor = OrganismGraph("Donor", engine, store, registry)
+        self.recipient = OrganismGraph("Recipient", engine, store, registry)
         self.engine = engine
+        self._registry = registry
 
         self.donor.add_chromosome_node("d1", "AAAA", ["core"])
         self.blatem_hash = self.donor.register_plasmid(
@@ -46,6 +51,13 @@ class TestHGTSymlink(unittest.TestCase):
 
         self.recipient.add_chromosome_node("r1", "CCCC", ["core"])
         self.recipient.add_chromosome_node("r2", "GGGG", ["core"])
+
+    def tearDown(self):
+        self._registry.close()
+        try:
+            os.unlink(self._reg_path)
+        except OSError:
+            pass
 
     def test_no_resistance_before_hgt(self):
         self.assertFalse(self.recipient.has_resistance(self.blatem_hash))
@@ -76,7 +88,10 @@ class TestNodeSplitOnHGTInsertion(unittest.TestCase):
     def setUp(self):
         engine = PanIndexEngine(pangenome_seed=b"test_node_split_seed_000000000a")
         store = PanIndexStore()
-        self.recipient = OrganismGraph("Recv", engine, store)
+        fd, self._reg_path = tempfile.mkstemp(suffix='.hgt.db')
+        os.close(fd)
+        self._registry = HGTRegistry(self._reg_path)
+        self.recipient = OrganismGraph("Recv", engine, store, self._registry)
         self.engine = engine
 
         self.recipient.add_chromosome_node("chr1", "ATCGATCGATCG", ["core"])
@@ -88,6 +103,13 @@ class TestNodeSplitOnHGTInsertion(unittest.TestCase):
         self.blatem_hash = donor.register_plasmid(
             "pD-blaTEM", PLASMID_SEQ, ["AMR:blaTEM"]
         )
+
+    def tearDown(self):
+        self._registry.close()
+        try:
+            os.unlink(self._reg_path)
+        except OSError:
+            pass
 
     def test_original_node_removed_after_split(self):
         self.recipient.receive_hgt("HGT:blaTEM", self.blatem_hash, "Donor",
@@ -119,10 +141,12 @@ class TestGlobalAMRScan(unittest.TestCase):
 
     def test_multiple_recipients_detected(self):
         sim = HGTSimulation()
-        blatem_hash, _ = sim.run()
-
-        amr_nodes = sim.global_store.lookup_by_tag("AMR:blaTEM")
-        self.assertTrue(len(amr_nodes) >= 1)
+        try:
+            blatem_hash, _ = sim.run()
+            amr_nodes = sim.global_store.lookup_by_tag("AMR:blaTEM")
+            self.assertTrue(len(amr_nodes) >= 1)
+        finally:
+            sim.cleanup()
 
     def test_hash_is_same_content_same_organism(self):
         # Two organisms registering the exact same plasmid sequence

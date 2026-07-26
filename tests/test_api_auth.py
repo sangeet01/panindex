@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'viz'))
 # We do this by providing a stub BipartiteGraph that does nothing on parse_gfa.
 # --------------------------------------------------------------------------
 import bipartite as _bipartite_real
+_real_bipartite_graph = _bipartite_real.BipartiteGraph
 
 
 class _StubGraph:
@@ -38,6 +39,7 @@ _spec = importlib.util.spec_from_file_location(
 _server_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_server_mod)
 app = _server_mod.app
+_bipartite_real.BipartiteGraph = _real_bipartite_graph
 
 
 # ======================================================================

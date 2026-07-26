@@ -2,6 +2,7 @@ import sys
 import os
 import hashlib
 import unittest
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -77,6 +78,36 @@ class TestFractalRatchet(unittest.TestCase):
     def test_address_length_is_32_bytes(self):
         addr = self.engine.derive_ratchet_address(self.engine.root_hash, "Chr1")
         self.assertEqual(len(addr), 32)
+
+    def test_content_address_changes_with_sequence_or_strand(self):
+        forward = self.engine.compute_content_address("ATCG", "+")
+        changed = self.engine.compute_content_address("ATCA", "+")
+        reverse = self.engine.compute_content_address("ATCG", "-")
+
+        self.assertNotEqual(forward, changed)
+        self.assertNotEqual(forward, reverse)
+
+    def test_content_address_is_independent_of_graph_parent(self):
+        first = self.engine.compute_content_address("ATCG", "+")
+        second = self.engine.compute_content_address("ATCG", "+")
+        self.assertEqual(first, second)
+
+    def test_topology_address_changes_with_parent_context(self):
+        parent_a = hashlib.sha256(b"parent_a").digest()
+        parent_b = hashlib.sha256(b"parent_b").digest()
+        first = self.engine.compute_topology_address("ATCG", [parent_a], "+")
+        second = self.engine.compute_topology_address("ATCG", [parent_b], "+")
+        reordered = self.engine.compute_topology_address(
+            "ATCG", [parent_b, parent_a], "+"
+        )
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            reordered,
+            self.engine.compute_topology_address(
+                "ATCG", [parent_a, parent_b], "+"
+            ),
+        )
 
 
 class TestCanonicalCycleHash(unittest.TestCase):
@@ -158,6 +189,44 @@ class TestPanIndexStore(unittest.TestCase):
         s = self.store.stats()
         self.assertEqual(s['total_nodes'], 3)
         self.assertGreater(s['unique_tags'], 0)
+
+    def test_content_identity_can_have_multiple_placements(self):
+        content_id = self.engine.compute_content_address("A", "+").hex()
+        second_address = self.engine.derive_ratchet_address(
+            self.engine.root_hash, "n4"
+        )
+        self.store.insert(
+            "n4", second_address, [], {'seq': 'A'}, content_id=content_id
+        )
+        self.store.insert(
+            "n2-copy",
+            self.engine.derive_ratchet_address(self.engine.root_hash, "n2-copy"),
+            [],
+            {'seq': 'A'},
+            content_id=content_id,
+        )
+
+        self.assertEqual(
+            self.store.lookup_by_content_id(content_id),
+            ["n4", "n2-copy"],
+        )
+
+    def test_content_identity_survives_persistence(self):
+        content_id = self.engine.compute_content_address("A", "+").hex()
+        self.store.insert(
+            "n4",
+            self.engine.derive_ratchet_address(self.engine.root_hash, "n4"),
+            [],
+            {'seq': 'A'},
+            content_id=content_id,
+        )
+
+        with TemporaryDirectory() as tmp:
+            loaded_path = os.path.join(tmp, 'index.db')
+            self.store.save(loaded_path)
+            loaded = PanIndexStore.load(loaded_path)
+
+        self.assertEqual(loaded.lookup_by_content_id(content_id), ["n4"])
 
 
 class TestPaninianRuleEngine(unittest.TestCase):

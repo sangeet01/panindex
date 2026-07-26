@@ -82,6 +82,16 @@ class TestBipartiteExpansion(unittest.TestCase):
         self.assertEqual(len(addrs), len(set(addrs)),
                          "Duplicate addresses found in bipartite expansion")
 
+    def test_identity_layers_are_persisted(self):
+        node = self.store.get_node("1+")
+        self.assertEqual(node['metadata']['stable_id'], "1+")
+        self.assertEqual(len(node['metadata']['content_id']), 64)
+        self.assertEqual(len(node['metadata']['topology_id']), 64)
+
+    def test_content_lookup_returns_all_matching_placements(self):
+        first = self.store.get_node("1+")['content_id']
+        self.assertEqual(self.store.lookup_by_content_id(first), ["1+"])
+
 
 class TestCircularCycleBreaking(unittest.TestCase):
     """
