@@ -9,22 +9,38 @@ from engine import PanIndexEngine
 from index import PanIndexStore
 
 
-def prove_ratchet_stability():
-    print("--- Proof of Ratchet Stability ---")
+def prove_ratchet_stability(n_unrelated_insertions: int = 50_000):
+    """
+    Demonstration (not a formal proof) that a node's ratchet address does
+    not depend on how many *other* nodes exist in the graph.
+
+    Calling derive_ratchet_address(root, "ARG_blaTEM") twice in a row and
+    checking equality only proves the function is deterministic -- true of
+    any pure function and not evidence about graph scale. This version
+    actually interleaves tens of thousands of unrelated derivations
+    (simulating other genes/isolates being added to the pangenome) between
+    the two calls, so the invariant under test -- "growing the rest of the
+    graph does not disturb this node's address" -- is the thing actually
+    exercised.
+    """
+    print("--- Demonstration: Ratchet Address Stability Under Graph Growth ---")
     engine = PanIndexEngine(pangenome_seed=b"stable_pangenome_seed_123")
 
     root_v1 = engine.root_hash
     gene_addr_v1 = engine.derive_ratchet_address(root_v1, "ARG_blaTEM")
-    print(f"Address in Version 1: {binascii.hexlify(gene_addr_v1).decode()}")
+    print(f"Address before growth: {binascii.hexlify(gene_addr_v1).decode()}")
 
-    # Simulate a massive pangenome update: millions of new nodes added.
-    # In traditional GFA, internal IDs would shift. In PanIndex, the same
-    # derivation path always produces the same address regardless of graph size.
+    # Simulate a large pangenome update: many unrelated nodes derived from
+    # the same root, as would happen when new isolates/genes are indexed.
+    for i in range(n_unrelated_insertions):
+        engine.derive_ratchet_address(root_v1, f"unrelated_gene_{i}")
+
     gene_addr_v2 = engine.derive_ratchet_address(root_v1, "ARG_blaTEM")
-    print(f"Address in Version 2: {binascii.hexlify(gene_addr_v2).decode()}")
+    print(f"Address after {n_unrelated_insertions:,} unrelated insertions: "
+          f"{binascii.hexlify(gene_addr_v2).decode()}")
 
     assert gene_addr_v1 == gene_addr_v2
-    print("SUCCESS: Known-path address is invariant to unrelated graph scale.\n")
+    print("SUCCESS: known-path address unchanged by unrelated graph growth.\n")
 
 
 def prove_hgt_detection():
