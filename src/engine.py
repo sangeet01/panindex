@@ -116,20 +116,52 @@ class PanIndexEngine:
         # Mix sequence and neighborhood context
         return hashlib.sha256(seq_hash + neighborhood_context_hash).digest()
 
+    @staticmethod
+    def _least_rotation_index(s: str) -> int:
+        """
+        Booth's algorithm: find the starting index of the lexicographically
+        smallest rotation of ``s`` in O(n) time.
+
+        The naive approach (slice every rotation and compare strings) is
+        O(n^2) and becomes a real bottleneck on large circular plasmids/
+        chromosomes -- exactly the kind of scan this project exists to
+        avoid, so it isn't used here.
+        """
+        s = s + s  # work on the doubled string, as Booth's algorithm requires
+        n = len(s)
+        f = [-1] * n          # failure function
+        k = 0                 # least rotation of s found so far
+        for j in range(1, n):
+            sj = s[j]
+            i = f[j - k - 1]
+            while i != -1 and sj != s[k + i + 1]:
+                if sj < s[k + i + 1]:
+                    k = j - i - 1
+                i = f[i]
+            if sj != s[k + i + 1]:
+                if sj < s[k]:
+                    k = j
+                f[j - k] = -1
+            else:
+                f[j - k] = i + 1
+        return k
+
     def canonical_cycle_hash(self, circular_sequence: str) -> bytes:
         """
         Canonical Cycle Hashing for plasmids.
-        Unrolls circular DNA by finding the lexicographical minimum k-mer.
+
+        Unrolls circular DNA deterministically by rotating the sequence to
+        start at its lexicographically smallest rotation (via Booth's
+        algorithm, O(n) time and space) so that a plasmid sequenced start
+        anywhere on the circle always canonicalizes to the same address.
         """
-        # Lexicographical minimum cyclic shift
         n = len(circular_sequence)
-        s = circular_sequence + circular_sequence
-        min_s = circular_sequence
-        for i in range(1, n):
-            current_s = s[i:i+n]
-            if current_s < min_s:
-                min_s = current_s
-        
+        if n == 0:
+            return hashlib.sha256(b'').digest()
+
+        start = self._least_rotation_index(circular_sequence)
+        min_s = circular_sequence[start:] + circular_sequence[:start]
+
         return hashlib.sha256(min_s.encode()).digest()
 
 def example_usage():
