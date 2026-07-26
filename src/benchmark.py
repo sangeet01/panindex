@@ -45,17 +45,17 @@ def run_benchmark():
     print()
 
     # ------------------------------------------------------------------
-    # MODE 1: Ratchet Path Derivation (O(1))
+    # MODE 1: Known-path derivation (O(d), then indexed lookup)
     # ------------------------------------------------------------------
     t0 = time.perf_counter()
     for _ in range(RUNS):
         result = q.query_by_path(target_path)
     ratchet_ms = (time.perf_counter() - t0) / RUNS * 1000
     ratchet_hit = not result.is_empty()
-    print(f"Mode 1  Ratchet Path (O(1))      : {ratchet_ms:.4f} ms  | Hit: {ratchet_hit}")
+    print(f"Mode 1  Ratchet Path (O(d))       : {ratchet_ms:.4f} ms  | Hit: {ratchet_hit}")
 
     # ------------------------------------------------------------------
-    # MODE 2: Tag Index Lookup (O(1))
+    # MODE 2: Tag index lookup (O(1) expected, plus result enumeration)
     # Tag format stored by annotator is: "AN:<value>" from GFA field AN:Z:<value>
     # ------------------------------------------------------------------
     t0 = time.perf_counter()
@@ -63,7 +63,7 @@ def run_benchmark():
         result_tag = q.query_by_tag("AN:kp_node_14")
     tag_ms = (time.perf_counter() - t0) / RUNS * 1000
     tag_hit = not result_tag.is_empty()
-    print(f"Mode 2  Tag Index (O(1))          : {tag_ms:.4f} ms  | Hit: {tag_hit}")
+    print(f"Mode 2  Tag Index (expected O(1))  : {tag_ms:.4f} ms  | Hit: {tag_hit}")
 
     # ------------------------------------------------------------------
     # MODE 3: Linear Brute-Force Scan (O(N))
@@ -88,10 +88,10 @@ def run_benchmark():
     print(f"  Ratchet vs linear:    {linear_ms / ratchet_ms:.2f}x (HKDF constant >> N=500)")
     print()
     print("Scaling analysis:")
-    print("  Tag index is O(1) dictionary lookup, always sub-millisecond.")
-    print("  Ratchet derivation is O(1) in complexity but HKDF has a constant cost")
-    print("  of ~0.02ms. At N=500 linear scan is faster. At N=50,000+ nodes,")
-    print("  linear scan will take seconds; ratchet stays at 0.02ms.")
+    print("  Tag index lookup is expected O(1), excluding result enumeration.")
+    print("  Path derivation is O(d), where d is the number of path components,")
+    print("  followed by the address index lookup. Neither depends on unrelated")
+    print("  graph nodes once preprocessing is complete.")
     print("  This is the same principle as binary search vs hash table -")
     print("  hash tables lose at N=10, win at N=10,000.")
 

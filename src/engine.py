@@ -3,27 +3,56 @@ import os
 import binascii
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from typing import List, Union
+from typing import TYPE_CHECKING, List, Optional, Union
+
+if TYPE_CHECKING:
+    from meta_layer import DerivationHistory
+
 
 class PanIndexEngine:
     """
     PanIndex Core Hashing Engine.
     Implements Commutative Merkle Addressing and Fractal Ratchet HKDF Derivation.
+
+    Optionally accepts a DerivationHistory instance (Asiddhatva staged tracking).
+    When attached, every derive_ratchet_address() call is recorded so the full
+    derivation path of any node can be replayed or used for lift-over.
     """
-    
-    def __init__(self, pangenome_seed: bytes = None):
+
+    def __init__(
+        self,
+        pangenome_seed: Optional[bytes] = None,
+        history: Optional['DerivationHistory'] = None,
+    ):
         if pangenome_seed is None:
             self.root_seed = os.urandom(32)
         else:
             self.root_seed = pangenome_seed
-        
+
         # Pangenome Root Hash (H_root)
         self.root_hash = hashlib.sha256(self.root_seed).digest()
 
-    def derive_ratchet_address(self, parent_hash: bytes, context: str) -> bytes:
+        # Optional Asiddhatva derivation history log
+        self.history: Optional['DerivationHistory'] = history
+
+        # Running depth counter for history entries
+        self._depth: int = 0
+
+    def derive_ratchet_address(
+        self,
+        parent_hash: bytes,
+        context: str,
+        node_id: Optional[str] = None,
+    ) -> bytes:
         """
-        Fractal Ratchet - HKDF Derivation Path Coordinate System.
-        Provides O(1) direct access to hierarchical locations.
+        Fractal Ratchet - HKDF derivation for a known path component.
+
+        One component is derived in constant time; a path with depth ``d``
+        costs O(d) before the resulting address is looked up in an index.
+
+        If a DerivationHistory is attached, the step is recorded for
+        Asiddhatva staged traceability.  node_id defaults to context when
+        not supplied.
         """
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
@@ -31,7 +60,37 @@ class PanIndexEngine:
             salt=parent_hash,
             info=context.encode(),
         )
-        return hkdf.derive(parent_hash)
+        address = hkdf.derive(parent_hash)
+
+        if self.history is not None:
+            self.history.record(
+                node_id=node_id if node_id is not None else context,
+                parent_hash=parent_hash,
+                address=address,
+                context=context,
+                depth=self._depth,
+            )
+            self._depth += 1
+
+        return address
+
+    def compute_content_address(self, sequence: str, strand: str = '+') -> bytes:
+        """Return a sequence identity independent of graph placement."""
+        normalized = sequence.upper().encode()
+        return hashlib.sha256(normalized + b'|' + strand.encode()).digest()
+
+    def compute_topology_address(
+        self,
+        sequence: str,
+        parent_addresses: List[bytes],
+        strand: str = '+',
+    ) -> bytes:
+        """Return an order-independent identity for sequence placement."""
+        content_id = self.compute_content_address(sequence, strand)
+        neighborhood = self.compute_commutative_hash(parent_addresses)
+        return hashlib.sha256(
+            b'FRX-TOPOLOGY\x00' + content_id + neighborhood
+        ).digest()
 
     def compute_commutative_hash(self, neighbor_hashes: List[bytes]) -> bytes:
         """
@@ -77,7 +136,7 @@ def example_usage():
     engine = PanIndexEngine(pangenome_seed=b"fixed_seed_for_demo_01234567890")
     print(f"Pangenome Root Hash: {binascii.hexlify(engine.root_hash).decode()}")
 
-    # 1. Fractal Ratchet Derivation (O(1))
+    # 1. Fractal Ratchet Derivation for a known path
     # Deriving Species -> Chromosome -> Gene
     chr4_addr = engine.derive_ratchet_address(engine.root_hash, "Chr4")
     brca1_addr = engine.derive_ratchet_address(chr4_addr, "BRCA1")

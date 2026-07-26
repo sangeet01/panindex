@@ -1,5 +1,5 @@
 import bisect
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Union
 
 
 class PanIndexStore:
@@ -9,8 +9,8 @@ class PanIndexStore:
     Two internal structures:
     1. Address Index   -> sorted list of (address_hex, node_id) pairs.
        Provides O(log K) lookup by ratchet address.
-    2. Tag Index       -> dict of tag_string -> [node_id, ...].
-       Provides O(1) lookup by Anubandha tag.
+     2. Tag Index       -> dict of tag_string -> [node_id, ...].
+         Provides expected O(1) lookup of a tag posting list.
     """
 
     def __init__(self):
@@ -20,6 +20,9 @@ class PanIndexStore:
 
         # Tag -> list of node_ids
         self._tag_index: Dict[str, List[str]] = {}
+
+        # Content ID -> all placements containing that sequence and strand
+        self._content_index: Dict[str, List[str]] = {}
 
         # node_id -> full metadata dict
         self._node_store: Dict[str, Dict[str, Any]] = {}
@@ -35,38 +38,62 @@ class PanIndexStore:
         tags: List[str],
         metadata: Dict[str, Any] = None,
         organism: str = "",
+        merkle_addr: str = "",
+        content_id: str = "",
+        index_alias: bool = False,
     ):
         """
         Insert a node and its PanIndex address into the index.
 
         Args:
-            node_id   : GFA segment ID (e.g. '1', '42').
-            address   : 32-byte PanIndex address (bytes).
-            tags      : List of Anubandha tag strings (e.g. ['AMR:blaTEM', 'Chr4']).
-            metadata  : Any additional data (sequence, derivation path, etc.).
-            organism  : Organism/strain identifier for namespace scoping.
-                        Default '' (global namespace, backward compatible).
+            node_id    : GFA segment ID (e.g. '1', '42').
+            address    : 32-byte ratchet path address (bytes).
+            tags       : List of Anubandha tag strings.
+            metadata   : Any additional data (sequence, derivation path, etc.).
+            organism   : Organism/strain identifier for namespace scoping.
+            merkle_addr: Hex string of the content-derived Merkle address.
+                         When provided, the node is also indexed under this
+                         address so lookup_by_address() works for both the
+                         ratchet path address and the Merkle address.
+            content_id : Hex string identifying sequence and strand content.
+                         Multiple node placements may share this identity.
         """
         addr_hex = address.hex()
 
         # Sorted insert into address index (B-Tree leaf approximation)
         pos = bisect.bisect_left(self._addr_keys, addr_hex)
         if pos < len(self._addr_keys) and self._addr_keys[pos] == addr_hex:
-            # Address already exists - update
             self._addr_vals[pos] = node_id
         else:
             self._addr_keys.insert(pos, addr_hex)
             self._addr_vals.insert(pos, node_id)
 
-        # Tag index
-        for tag in tags:
-            self._tag_index.setdefault(tag, [])
-            if node_id not in self._tag_index[tag]:
-                self._tag_index[tag].append(node_id)
+        # Also index by Merkle address when it differs from the ratchet address
+        if merkle_addr and merkle_addr != addr_hex:
+            mpos = bisect.bisect_left(self._addr_keys, merkle_addr)
+            if not (mpos < len(self._addr_keys) and self._addr_keys[mpos] == merkle_addr):
+                self._addr_keys.insert(mpos, merkle_addr)
+                self._addr_vals.insert(mpos, node_id)
 
-        # Node store - include organism for namespace-scoped queries
+        is_alias = metadata.get('is_alias', False) if metadata else False
+
+        # Tag index
+        if not is_alias:
+            for tag in tags:
+                self._tag_index.setdefault(tag, [])
+                if node_id not in self._tag_index[tag]:
+                    self._tag_index[tag].append(node_id)
+
+        if content_id and not is_alias:
+            self._content_index.setdefault(content_id, [])
+            if node_id not in self._content_index[content_id]:
+                self._content_index[content_id].append(node_id)
+
+        # Node store
         self._node_store[node_id] = {
             'address': addr_hex,
+            'merkle_addr': merkle_addr,
+            'content_id': content_id,
             'tags': tags,
             'metadata': metadata or {},
             'organism': organism,
@@ -89,7 +116,8 @@ class PanIndexStore:
 
     def lookup_by_tag(self, tag: str, organism: Optional[str] = None) -> List[str]:
         """
-        O(1) lookup of all node_ids carrying a given Anubandha tag.
+        Expected O(1) lookup of the posting list for an Anubandha tag;
+        returning all matches costs O(R) for R results.
 
         Args:
             tag      : Anubandha tag string (e.g. 'AMR:blaTEM').
@@ -106,6 +134,11 @@ class PanIndexStore:
             n for n in nodes
             if self._node_store.get(n, {}).get('organism', '') == organism
         ]
+
+    def lookup_by_content_id(self, content_id: Union[bytes, str]) -> List[str]:
+        """Return every placement carrying a sequence content identity."""
+        key = content_id.hex() if isinstance(content_id, bytes) else content_id
+        return list(self._content_index.get(key, []))
 
     def range_lookup(self, address_start: bytes, address_end: bytes) -> List[Tuple[str, str]]:
         """

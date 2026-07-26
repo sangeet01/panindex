@@ -14,37 +14,49 @@ Both produce identical output (same AN:Z:/PA:Z:/AF:i: tags, same addresses).
 
 Two-pass algorithm
 ------------------
-Pass 1 (S-lines):
-  Read segments one at a time. For each segment, compute a provisional
-  ratchet address (derivation_root -> node_id derivation, no neighbor XOR).
-  Write node data immediately to a SQLite temp table. Clear from RAM.
+Pass 1 (S-lines + L-lines):
+  First sub-pass: read all L-lines to build a neighbour map (node -> [neighbours]).
+  Second sub-pass: read S-lines one at a time.  For each segment:
+    - Compute ratchet address.
+    - Collect neighbour tags from the neighbour map for Sannidhi context.
+    - Apply the full Paninian rule engine (Utsarga/Apavada + SemanticFilter Phi).
+    - Record the derivation step in DerivationHistory (Asiddhatva).
+    - Write node data immediately to a SQLite temp table.  Clear from RAM.
 
 Pass 2 (Write-back):
-  Re-read the input GFA line by line. For each S-line, fetch the pre-computed
-  address from the temp table and inject AN:Z:/PA:Z:/AF:i: tags. Write to
-  output line by line. All other line types (H/L/P/W) pass through unchanged.
+  Re-read the input GFA line by line.  For each S-line, fetch the pre-computed
+  address from the temp table and inject AN:Z:/PA:Z:/AF:i: tags.  Write to
+  output line by line.  All other line types (H/L/P/W) pass through unchanged.
 
-Note on Merkle XOR: the streaming path uses pure ratchet-path addresses
-(identical to query_by_path behavior). The full Merkle XOR (commutative
-neighbor hashing) is computed by the standard annotator and stored in the
-'merkle_addr' metadata field. For the streaming case this field is omitted
-since it requires the full adjacency graph in memory.
+Semantic Filter Phi (Akanksha + Yogyata + Sannidhi):
+  - Akanksha  : demotes RES:amr_confirmed/critical to candidate when seq is empty.
+  - Yogyata   : appends COMPAT:low_gc / COMPAT:high_gc based on GC content.
+  - Sannidhi  : upgrades/downgrades resolution based on neighbour tag proximity.
+  Extra bio-tags produced by the filter are stored in the temp DB and written
+  to the output GFA as part of the AF:i: tag count.
+
+Asiddhatva / DerivationHistory:
+  A DerivationHistory is attached to the engine.  Every derive_ratchet_address()
+  call is recorded.  The history path string is stored in the temp DB and in
+  the PanIndexStore metadata so it is queryable after annotation.
 
 Memory profile:
   Standard annotator : O(N * avg_seq_len) peak RAM
-  Streaming annotator: O(1) peak RAM (one line at a time per pass)
+  Streaming annotator: O(E) peak RAM for neighbour map (E = number of L-lines)
+                       + O(1) per S-line during address derivation
 """
 
 import os
 import sqlite3
 import tempfile
-from typing import Optional
+from typing import Dict, List, Optional, Set
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from engine import PanIndexEngine
 from index import PanIndexStore
+from meta_layer import DerivationHistory
 
 # Files smaller than this (in bytes) will use the fast in-memory path
 DEFAULT_MEM_LIMIT_BYTES = 256 * 1024 * 1024  # 256 MB
@@ -61,14 +73,19 @@ class StreamingGFAAnnotator:
     Produces the same output as GFAAnnotator but processes the file
     in passes without holding all nodes in memory simultaneously.
 
+    Semantic Filter Phi and DerivationHistory (Asiddhatva) are both
+    active in the streaming path, matching the in-memory annotator.
+
     Attributes:
-        engine      : PanIndexEngine used for address derivation.
-        store       : PanIndexStore populated during annotation.
+        engine        : PanIndexEngine with attached DerivationHistory.
+        store         : PanIndexStore populated during annotation.
+        history       : DerivationHistory for Asiddhatva staged traceability.
         nodes_written : Number of S-lines annotated in the last run.
     """
 
     def __init__(self, seed: Optional[bytes] = None):
-        self.engine = PanIndexEngine(pangenome_seed=seed)
+        self.history = DerivationHistory()
+        self.engine = PanIndexEngine(pangenome_seed=seed, history=self.history)
         self.store = PanIndexStore()
         self.nodes_written: int = 0
 
@@ -89,7 +106,6 @@ class StreamingGFAAnnotator:
             output_path     : Path for annotated output GFA.
             derivation_root : Top-level label in the derivation hierarchy.
         """
-        # Temp SQLite for intermediate segment data
         tmp_fd, tmp_db = tempfile.mkstemp(suffix='.frx_streaming_tmp.db')
         os.close(tmp_fd)
 
@@ -113,24 +129,69 @@ class StreamingGFAAnnotator:
         tmp_db: str,
     ):
         """
-        Read S-lines from the GFA, compute addresses, write to temp db.
-        One node at a time - O(1) peak RAM.
+        Two sub-passes:
+          1a. Scan L-lines to build neighbour map (node_id -> set of neighbour ids).
+          1b. Scan S-lines: derive address, apply full Phi filter with Sannidhi
+              neighbour context, record DerivationHistory, write to temp DB.
         """
+        # ----------------------------------------------------------
+        # Sub-pass 1a: build neighbour map from L-lines (O(E) RAM)
+        # ----------------------------------------------------------
+        # neighbour_map[node_id] = set of directly adjacent node_ids
+        neighbour_map: Dict[str, Set[str]] = {}
+
+        with open(input_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if parts[0] != 'L' or len(parts) < 5:
+                    continue
+                u, v = parts[1], parts[3]
+                neighbour_map.setdefault(u, set()).add(v)
+                neighbour_map.setdefault(v, set()).add(u)
+
+        # ----------------------------------------------------------
+        # Sub-pass 1b: scan S-lines, derive addresses, apply Phi
+        # ----------------------------------------------------------
         conn = sqlite3.connect(tmp_db)
         conn.execute("""
             CREATE TABLE segments (
-                node_id       TEXT PRIMARY KEY,
-                address_hex   TEXT NOT NULL,
-                derivation    TEXT NOT NULL,
-                tag_count     INTEGER NOT NULL,
-                seq           TEXT NOT NULL
+                node_id         TEXT PRIMARY KEY,
+                address_hex     TEXT NOT NULL,
+                derivation      TEXT NOT NULL,
+                history_path    TEXT NOT NULL,
+                tag_count       INTEGER NOT NULL,
+                seq             TEXT NOT NULL,
+                strand          TEXT NOT NULL,
+                component       INTEGER NOT NULL,
+                resolution      TEXT NOT NULL,
+                bio_tags        TEXT NOT NULL
             )
         """)
 
         root_path_addr = self.engine.derive_ratchet_address(
-            self.engine.root_hash, derivation_root
+            self.engine.root_hash, derivation_root,
+            node_id=derivation_root,
         )
 
+        # We need the tags of neighbours for Sannidhi, but in a single-pass
+        # stream we haven't seen all nodes yet.  Strategy: collect raw tags
+        # from S-lines in a lightweight dict (node_id -> raw_tag_string) in
+        # this same pass, then resolve Sannidhi in a deferred second scan of
+        # the rows buffer.  For very large files this dict is O(N * avg_tags)
+        # which is far smaller than O(N * avg_seq_len).
+        node_raw_tags: Dict[str, List[str]] = {}
+
+        # First collect all node raw tags (seq not stored, just tags)
+        with open(input_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.rstrip('\n').split('\t')
+                if parts[0] != 'S' or len(parts) < 3:
+                    continue
+                nid = parts[1]
+                raw = parts[3:] if len(parts) > 3 else []
+                node_raw_tags[nid] = self._extract_tags(raw)
+
+        # Now derive addresses and apply full Phi filter
         rows = []
         BATCH = 500
 
@@ -148,61 +209,115 @@ class StreamingGFAAnnotator:
                 raw_tags = parts[3:] if len(parts) > 3 else []
                 anubandha_tags = self._extract_tags(raw_tags)
 
-                # Apply Paninian rule engine - append resolution as an extra tag
-                rule_node = {'tags': anubandha_tags, 'seq': seq}
-                resolution = self._rule_engine.resolve(rule_node, {})
-                if resolution and resolution != 'default_resolution':
-                    anubandha_tags = list(anubandha_tags) + [resolution]
+                # Detect strand from existing tags (e.g. from a prior annotation)
+                strand = '+'
+                for t in anubandha_tags:
+                    if t.startswith('strand:'):
+                        strand = t.split(':', 1)[1]
+                        break
 
+                # Detect component from existing tags
+                component = 0
+                for t in anubandha_tags:
+                    if t.startswith('component:'):
+                        try:
+                            component = int(t.split(':', 1)[1])
+                        except ValueError:
+                            pass
+                        break
+
+                # Build Sannidhi neighbour_tags context
+                neighbour_ids = neighbour_map.get(node_id, set())
+                neighbour_tags: List[str] = []
+                for nb_id in neighbour_ids:
+                    neighbour_tags.extend(node_raw_tags.get(nb_id, []))
+
+                # Apply Paninian rule engine with full Phi (Akanksha + Yogyata + Sannidhi)
+                rule_node = {'tags': list(anubandha_tags), 'seq': seq}
+                bio_context = {
+                    'neighbor_tags': neighbour_tags,
+                    'component': component,
+                    'strand': strand,
+                }
+                resolution = self._rule_engine.resolve(rule_node, bio_context)
+                # rule_node['tags'] may have been extended in-place by SemanticFilter
+                enriched_tags = rule_node['tags']
+                bio_tags_extra = [
+                    t for t in enriched_tags if t not in anubandha_tags
+                ]
+
+                # Derive ratchet address (recorded in DerivationHistory automatically)
                 ratchet_addr = self.engine.derive_ratchet_address(
-                    root_path_addr, node_id
+                    root_path_addr, node_id, node_id=node_id
                 )
                 derivation = f"{derivation_root}/{node_id}"
+
+                # Retrieve the history path string for this node
+                history_path = ' -> '.join(
+                    self.history.get_derivation_path(node_id)
+                )
+
+                # Build the full tag set for this node
+                full_tags = list(enriched_tags) + [
+                    f"LN:{len(seq)}",
+                    f"strand:{strand}",
+                    f"node:{node_id}",
+                    f"component:{component}",
+                ]
+                if resolution and resolution != 'default_resolution':
+                    full_tags.append(resolution)
 
                 rows.append((
                     node_id,
                     ratchet_addr.hex(),
                     derivation,
-                    len(anubandha_tags),
+                    history_path,
+                    len(full_tags),
                     seq,
+                    strand,
+                    component,
+                    resolution if resolution != 'default_resolution' else '',
+                    ','.join(bio_tags_extra),
                 ))
 
-                # Also populate the in-memory store
+                # Populate the in-memory store
                 self.store.insert(
                     node_id=node_id,
                     address=ratchet_addr,
-                    tags=anubandha_tags,
+                    tags=full_tags,
                     metadata={
                         'seq': seq,
+                        'strand': strand,
                         'derivation_path': derivation,
-                        'out_neighbors': [],
+                        'derivation_history': history_path,
+                        'component': component,
+                        'out_neighbors': list(neighbour_ids),
                         'in_neighbors': [],
                     }
                 )
 
                 if len(rows) >= BATCH:
-                    conn.executemany(
-                        "INSERT OR REPLACE INTO segments "
-                        "(node_id, address_hex, derivation, tag_count, seq) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        rows
-                    )
-                    conn.commit()
+                    self._flush_rows(conn, rows)
                     rows.clear()
 
         if rows:
-            conn.executemany(
-                "INSERT OR REPLACE INTO segments "
-                "(node_id, address_hex, derivation, tag_count, seq) "
-                "VALUES (?, ?, ?, ?, ?)",
-                rows
-            )
-            conn.commit()
+            self._flush_rows(conn, rows)
 
         self.nodes_written = conn.execute(
             "SELECT COUNT(*) FROM segments"
         ).fetchone()[0]
         conn.close()
+
+    @staticmethod
+    def _flush_rows(conn: sqlite3.Connection, rows: list):
+        conn.executemany(
+            "INSERT OR REPLACE INTO segments "
+            "(node_id, address_hex, derivation, history_path, tag_count, "
+            " seq, strand, component, resolution, bio_tags) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows
+        )
+        conn.commit()
 
     # ------------------------------------------------------------------
     # Pass 2 - Write annotated GFA
@@ -217,6 +332,12 @@ class StreamingGFAAnnotator:
         """
         Re-read input line by line, inject tags from temp db, write output.
         One line at a time - O(1) peak RAM.
+
+        Injected tags per S-line:
+            AN:Z:<address_hex>   - 32-byte ratchet address
+            PA:Z:<derivation>    - human-readable derivation path
+            AF:i:<tag_count>     - number of Anubandha tags (incl. bio-tags)
+            HI:Z:<history_path>  - Asiddhatva derivation history chain
         """
         conn = sqlite3.connect(tmp_db)
 
@@ -229,16 +350,18 @@ class StreamingGFAAnnotator:
                 if parts[0] == 'S' and len(parts) >= 3:
                     node_id = parts[1]
                     row = conn.execute(
-                        "SELECT address_hex, derivation, tag_count "
+                        "SELECT address_hex, derivation, tag_count, history_path "
                         "FROM segments WHERE node_id = ?",
                         (node_id,)
                     ).fetchone()
 
                     if row:
-                        addr_hex, derivation, tag_count = row
+                        addr_hex, derivation, tag_count, history_path = row
                         parts.append(f"AN:Z:{addr_hex}")
                         parts.append(f"PA:Z:{derivation}")
                         parts.append(f"AF:i:{tag_count}")
+                        if history_path:
+                            parts.append(f"HI:Z:{history_path}")
 
                 fout.write('\t'.join(parts) + '\n')
 
@@ -264,8 +387,9 @@ class StreamingGFAAnnotator:
         """Print a summary of the streaming annotation results."""
         print(f"\n[StreamingGFAAnnotator] Nodes indexed: {self.nodes_written}")
         st = self.store.stats()
-        print(f"  Total nodes   : {st['total_nodes']}")
-        print(f"  Unique tags   : {st['unique_tags']}")
+        print(f"  Total nodes      : {st['total_nodes']}")
+        print(f"  Unique tags      : {st['unique_tags']}")
+        print(f"  Derivation stages: {len(self.history)}")
 
 
 # ======================================================================

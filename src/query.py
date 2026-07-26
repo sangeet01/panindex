@@ -90,13 +90,13 @@ class PanIndexQuery:
 
     Four modes, all work against a populated PanIndexStore:
 
-    Mode 1 - Ratchet Path Query  (O(1) per level):
+    Mode 1 - Ratchet Path Query  (O(d) for path depth d):
         Input : "Root/Chr4/BRCA1/VarA"
         Action: Walk the slash-separated path, chaining HKDF derivations.
                 The final derived address is looked up in the index.
         Use   : Jump to any node in the pangenome without graph traversal.
 
-    Mode 2 - Tag Query  (O(1)):
+    Mode 2 - Tag Query  (expected O(1) posting-list lookup + results):
         Input : "AMR:blaTEM"
         Action: Direct tag index lookup using store.lookup_by_tag().
         Use   : Find all nodes carrying a known Anubandha annotation.
@@ -190,27 +190,45 @@ class PanIndexQuery:
         """
         Compute a MinHash signature for a k-mer set of the sequence.
 
-        Each hash function h_i is simulated by seeding SHA-256 with a
-        different salt (the hash index i), producing a minimal hash over
-        all k-mers. This is the standard bottom-k MinHash approach.
+        Uses the standard single-hash + linear-congruential permutation trick:
+        for each k-mer, compute one SHA-256 hash, then derive num_hashes
+        permuted values via h_i(x) = (a_i * h(x) + b_i) mod P.
+        This is O(|kmers| + num_hashes) rather than O(|kmers| * num_hashes).
+
+        Permutation coefficients are seeded deterministically so signatures
+        are reproducible across processes.
         """
         n = len(sequence)
         if n < k:
             return [0] * num_hashes
 
-        kmers = set(sequence[i:i+k] for i in range(n - k + 1))
-        signature = []
+        # Mersenne prime for the hash universe
+        _P = (1 << 61) - 1
 
+        # Deterministic permutation coefficients (seeded, never 0)
+        import struct
+        _a = []
+        _b = []
         for i in range(num_hashes):
-            min_val = None
-            for kmer in kmers:
-                h = int(hashlib.sha256(
-                    i.to_bytes(4, 'little') + kmer.encode()
-                ).hexdigest(), 16)
-                if min_val is None or h < min_val:
-                    min_val = h
-            signature.append(min_val if min_val is not None else 0)
+            seed_a = hashlib.sha256(struct.pack('<QQ', i, 0xDEADBEEF)).digest()
+            seed_b = hashlib.sha256(struct.pack('<QQ', i, 0xCAFEBABE)).digest()
+            _a.append((int.from_bytes(seed_a[:8], 'little') % (_P - 1)) + 1)
+            _b.append(int.from_bytes(seed_b[:8], 'little') % _P)
 
+        # One SHA-256 per k-mer
+        kmer_hashes = [
+            int(hashlib.sha256(sequence[i:i + k].encode()).hexdigest(), 16) % _P
+            for i in range(n - k + 1)
+        ]
+
+        if not kmer_hashes:
+            return [0] * num_hashes
+
+        # For each permutation, take the minimum over all k-mer hashes
+        signature = [
+            min((_a[i] * h + _b[i]) % _P for h in kmer_hashes)
+            for i in range(num_hashes)
+        ]
         return signature
 
     def _hamming_similarity(self, sig_a: List[int], sig_b: List[int]) -> float:
@@ -237,6 +255,8 @@ class PanIndexQuery:
 
         for node_id in self.store.all_nodes():
             node = self.store.get_node(node_id)
+            if not node or not node.get('metadata'):
+                continue
             node_seq = node['metadata'].get('seq', '')
             if not node_seq:
                 continue
@@ -271,7 +291,8 @@ class PanIndexQuery:
         5. Similarity >= threshold AND same organism -> VARIANT.
            Otherwise -> NOVEL.
 
-        All comparisons are O(1) or O(k) where k = MinHash signature length.
+        Address comparisons are O(1); MinHash comparison is O(k), where k is
+        the signature length. Query and result enumeration costs still apply.
         No sequence alignment is performed.
 
         Args:
